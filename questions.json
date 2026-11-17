@@ -1,26 +1,50 @@
 [
   {
-    "question": "Quais são os dois times/facções em disputa em Deadlock?",
+    "question": "Quais são as duas equipes que se enfrentam em Deadlock?",
     "options": ["Archmother e Hidden King", "Ordem e Caos", "Amber e Ruby", "Sol e Lua"],
     "answer": 0,
-    "explanation": "REVISAR na wiki antes de publicar."
+    "explanation": "Os dois lados da guerra pela cidade são a Archmother e o Hidden King."
   },
   {
     "question": "Qual destes é um herói jogável de Deadlock?",
     "options": ["Haze", "Sombra", "Jett", "Reaper"],
     "answer": 0,
-    "explanation": "Haze faz parte do elenco."
+    "explanation": "Haze faz parte do elenco de heróis de Deadlock."
   },
   {
     "question": "Qual destes é um herói jogável de Deadlock?",
     "options": ["Lady Geist", "Widowmaker", "Raze", "Sage"],
     "answer": 0,
-    "explanation": "Lady Geist faz parte do elenco."
+    "explanation": "Lady Geist faz parte do elenco de heróis de Deadlock."
   },
   {
     "question": "Qual destes é um herói jogável de Deadlock?",
     "options": ["Mo & Krill", "Tracer", "Brimstone", "Cypher"],
     "answer": 0,
-    "explanation": "Mo & Krill é uma dupla jogada como um único herói."
+    "explanation": "Mo & Krill é uma dupla controlada como um único herói."
+  },
+  {
+    "question": "Qual é a moeda que você coleta durante a partida para comprar itens?",
+    "options": ["Souls", "Gold", "Créditos", "Cristais"],
+    "answer": 0,
+    "explanation": "Os souls são coletados ao longo da partida e gastos na loja de itens."
+  },
+  {
+    "question": "Como se chama o chefe neutro no mapa?",
+    "options": ["Mid-Boss", "Roshan", "Baron", "Warden"],
+    "answer": 0,
+    "explanation": "O Mid-Boss é o chefe neutro do centro do mapa, e derrotá-lo dá uma vantagem ao time. (Rejuv)"
+  },
+  {
+    "question": "O que seu time precisa destruir para vencer a partida?",
+    "options": ["O Patron inimigo", "O Nexus inimigo", "A Ancient inimiga", "O Core inimigo"],
+    "answer": 0,
+    "explanation": "Destruir o Patron do time inimigo encerra a partida."
+  },
+  {
+    "question": "Qual destas estruturas defende cada lane e avança contra os inimigos?",
+    "options": ["Walker", "Torre", "Inibidor", "Totem"],
+    "answer": 0,
+    "explanation": "Os Walkers são as estruturas que protegem as lanes de cada time."
   }
 ]
