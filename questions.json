@@ -1,0 +1,26 @@
+[
+  {
+    "question": "Quais são os dois times/facções em disputa em Deadlock?",
+    "options": ["Archmother e Hidden King", "Ordem e Caos", "Amber e Ruby", "Sol e Lua"],
+    "answer": 0,
+    "explanation": "REVISAR na wiki antes de publicar."
+  },
+  {
+    "question": "Qual destes é um herói jogável de Deadlock?",
+    "options": ["Haze", "Sombra", "Jett", "Reaper"],
+    "answer": 0,
+    "explanation": "Haze faz parte do elenco."
+  },
+  {
+    "question": "Qual destes é um herói jogável de Deadlock?",
+    "options": ["Lady Geist", "Widowmaker", "Raze", "Sage"],
+    "answer": 0,
+    "explanation": "Lady Geist faz parte do elenco."
+  },
+  {
+    "question": "Qual destes é um herói jogável de Deadlock?",
+    "options": ["Mo & Krill", "Tracer", "Brimstone", "Cypher"],
+    "answer": 0,
+    "explanation": "Mo & Krill é uma dupla jogada como um único herói."
+  }
+]
