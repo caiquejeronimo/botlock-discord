@@ -7,8 +7,8 @@
   },
   {
     "question": "Qual destes é um herói jogável de Deadlock?",
-    "options": ["Haze", "Sombra", "Jett", "Reaper"],
-    "answer": 0,
+    "options": [ "Sombra", "Jett", "Reaper", "Haze"],
+    "answer": 3,
     "explanation": "Haze faz parte do elenco de heróis de Deadlock."
   },
   {
@@ -19,8 +19,8 @@
   },
   {
     "question": "Qual destes é um herói jogável de Deadlock?",
-    "options": ["Mo & Krill", "Tracer", "Brimstone", "Cypher"],
-    "answer": 0,
+    "options": ["Tracer", "Mo & Krill", "Brimstone", "Cypher"],
+    "answer": 1,
     "explanation": "Mo & Krill é uma dupla controlada como um único herói."
   },
   {
@@ -31,13 +31,13 @@
   },
   {
     "question": "Como se chama o chefe neutro no mapa?",
-    "options": ["Mid-Boss", "Roshan", "Baron", "Warden"],
-    "answer": 0,
+    "options": ["Roshan", "Baron","Mid-Boss", "Warden"],
+    "answer": 2,
     "explanation": "O Mid-Boss é o chefe neutro do centro do mapa, e derrotá-lo dá uma vantagem ao time. (Rejuv)"
   },
   {
     "question": "O que seu time precisa destruir para vencer a partida?",
-    "options": ["O Patron inimigo", "O Nexus inimigo", "A Ancient inimiga", "O Core inimigo"],
+    "options": ["O Nexus inimigo", "A Ancient inimiga", "O Patron inimigo", "O Core inimigo"],
     "answer": 0,
     "explanation": "Destruir o Patron do time inimigo encerra a partida."
   },

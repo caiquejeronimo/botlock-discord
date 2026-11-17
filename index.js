@@ -1,82 +1,24 @@
 import 'dotenv/config';
-import dns from 'node:dns';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import {
   Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
   ButtonBuilder, ButtonStyle, SlashCommandBuilder, MessageFlags,
 } from 'discord.js';
+import {
+  API, ASSETS, ApiError, getJson, describeError, sleep, heroes, ensureHeroes, heroName,
+  activeMatches, matchMetadata, matchHistory, playerNames,
+} from './src/api.js';
+import { viewFromActive, viewFromMetadata } from './src/views.js';
+import { cardPayload, liveButtons, livePicker, simplePayload, listButton } from './src/ui.js';
+import { imageStatus } from './src/render.js';
 
-// Muitos hosts não têm IPv6 funcionando; preferir IPv4 evita "fetch failed".
-dns.setDefaultResultOrder('ipv4first');
-
-const API = 'https://api.deadlock-api.com';
-const ASSETS = 'https://assets.deadlock-api.com';
 const STATS_FILE = 'scores.json';
 const QUESTIONS_FILE = 'questions.json';
 const POINTS_PER_CORRECT = 10;
 const STEAM64_BASE = 76561197960265728n;
-const HEADERS = { 'User-Agent': 'deadlock-discord-bot/0.2', Accept: 'application/json' };
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// ---------- Cliente HTTP com erros legíveis ----------
-class ApiError extends Error {
-  constructor(message, { status, code } = {}) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
-
-async function getJson(url, { retries = 2 } = {}) {
-  let err;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15_000) });
-      if (res.ok) return await res.json();
-      err = new ApiError(`HTTP ${res.status}`, { status: res.status });
-      if (res.status !== 429 && res.status < 500) break; // 4xx: repetir não adianta
-    } catch (e) {
-      // e.cause.code traz o motivo real (ENOTFOUND, ETIMEDOUT, ECONNREFUSED...)
-      err = new ApiError(e.message, { code: e.cause?.code ?? e.name });
-    }
-    if (attempt < retries) await sleep(1000 * (attempt + 1));
-  }
-  console.error(`[API] ${url} -> ${err.status ?? err.code}: ${err.message}`);
-  throw err;
-}
-
-function describeError(e) {
-  if (e.status === 429) return 'A API está limitando as requisições. Tente de novo em alguns segundos.';
-  if (e.status) return `A API respondeu com erro ${e.status}. Tente novamente mais tarde.`;
-  return `Não consegui conectar à API (${e.code ?? 'erro de rede'}). Use /status para diagnosticar.`;
-}
-
-// ---------- Dados do jogo ----------
-let heroes = new Map();
-async function ensureHeroes() {
-  if (heroes.size) return;
-  try {
-    const data = await getJson(`${ASSETS}/v2/heroes`);
-    if (Array.isArray(data)) heroes = new Map(data.map((h) => [h.id, h.name]));
-  } catch { /* já logado em getJson; segue com nomes genéricos */ }
-}
-const heroName = (id) => heroes.get(id) ?? `Herói #${id}`;
-
-const matchCache = new Map(); // partidas finalizadas não mudam
-const api = {
-  async matchMetadata(id) {
-    if (matchCache.has(id)) return matchCache.get(id);
-    const data = await getJson(`${API}/v1/matches/${id}/metadata`);
-    if (matchCache.size >= 100) matchCache.delete(matchCache.keys().next().value);
-    matchCache.set(id, data);
-    return data;
-  },
-  matchHistory: (id) => getJson(`${API}/v1/players/${id}/match-history`),
-  activeMatches: () => getJson(`${API}/v1/matches/active`),
-};
-
-const formatDuration = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const WATCH_INTERVAL_MS = 30_000;
+const WATCH_TICKS = 10;      // 10 x 30s = 5 minutos de atualização automática
+const MAX_WATCHERS = 20;     // limite para proteger o host e a API
 
 function parseAccountId(input) {
   const s = input.trim();
@@ -92,7 +34,6 @@ function loadStats() {
   try {
     const raw = JSON.parse(readFileSync(STATS_FILE, 'utf8'));
     for (const [id, v] of Object.entries(raw)) {
-      // migra o formato antigo (apenas um número de pontos)
       if (typeof v === 'number') raw[id] = { points: v, answered: 0, correct: 0 };
     }
     return raw;
@@ -125,11 +66,13 @@ const loadQuestions = () => JSON.parse(readFileSync(QUESTIONS_FILE, 'utf8'));
 
 // ---------- Comandos ----------
 const commands = [
-  new SlashCommandBuilder().setName('partida').setDescription('Detalhes de uma partida pelo match ID')
+  new SlashCommandBuilder().setName('partida').setDescription('Placar de uma partida pelo match ID')
     .addIntegerOption((o) => o.setName('match_id').setDescription('ID da partida').setRequired(true)),
+  new SlashCommandBuilder().setName('aovivo').setDescription('Placar das partidas ao vivo')
+    .addIntegerOption((o) => o.setName('partida').setDescription('Match ID de uma partida ao vivo'))
+    .addStringOption((o) => o.setName('jogador').setDescription('Account ID ou SteamID64: acha a partida atual dele')),
   new SlashCommandBuilder().setName('jogador').setDescription('Últimas partidas de um jogador')
     .addStringOption((o) => o.setName('id').setDescription('Account ID ou SteamID64').setRequired(true)),
-  new SlashCommandBuilder().setName('aovivo').setDescription('Partidas acontecendo agora'),
   new SlashCommandBuilder().setName('quiz').setDescription('Pergunta aleatória sobre Deadlock'),
   new SlashCommandBuilder().setName('perfil').setDescription('Sua pontuação no quiz')
     .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa')),
@@ -137,15 +80,116 @@ const commands = [
   new SlashCommandBuilder().setName('status').setDescription('Testa a conexão do bot com a Deadlock API'),
 ].map((c) => c.toJSON());
 
+// ---------- Respostas de erro ----------
+async function fail(i, message) {
+  try {
+    if (i.isMessageComponent() || i.replied) await i.followUp({ content: message, flags: MessageFlags.Ephemeral });
+    else await i.editReply({ content: message });
+  } catch (e) {
+    console.error('[fail]', e.message);
+  }
+}
+
+// ---------- Placar ao vivo ----------
+async function buildLiveView(matchId) {
+  const match = (await activeMatches()).find((m) => Number(m.match_id) === matchId);
+  if (!match) return null;
+  await ensureHeroes();
+  const nameOf = await playerNames((match.players ?? []).map((p) => p.account_id));
+  return viewFromActive(match, nameOf);
+}
+
+async function finishedPayload(matchId) {
+  await ensureHeroes();
+  const data = await matchMetadata(matchId);
+  const info = data.match_info ?? data;
+  const players = info.players ?? [];
+  if (!players.length) throw new ApiError('sem jogadores', { status: 404 });
+  const nameOf = await playerNames(players.map((p) => p.account_id));
+  return cardPayload(viewFromMetadata(matchId, info, nameOf));
+}
+
+// Quando a partida sai do feed: tenta mostrar o placar final, senão avisa.
+async function endedPayload(matchId) {
+  try {
+    return await finishedPayload(matchId);
+  } catch { /* resultado ainda não processado */ }
+  return simplePayload(
+    `## 🏁 Partida ${matchId} terminou\nO resultado final ainda não está disponível na API. Tente \`/partida ${matchId}\` em alguns minutos.`,
+    listButton(),
+  );
+}
+
+const watchers = new Map(); // id da mensagem -> token da vigilância ativa
+const stopWatch = (msgId) => watchers.delete(msgId);
+
+function startWatch(i, msgId, matchId) {
+  if (watchers.size >= MAX_WATCHERS) return; // o botão Atualizar continua funcionando
+  const token = Symbol();
+  watchers.set(msgId, token);
+  (async () => {
+    for (let n = 0; n < WATCH_TICKS; n++) {
+      await sleep(WATCH_INTERVAL_MS);
+      if (watchers.get(msgId) !== token) return; // outra ação assumiu a mensagem
+      try {
+        const view = await buildLiveView(matchId);
+        if (!view) {
+          await i.editReply(await endedPayload(matchId));
+          break;
+        }
+        await i.editReply(await cardPayload(view, liveButtons(matchId)));
+      } catch (e) {
+        console.error('[watch]', e.message); // token expirado, API fora do ar etc.
+        break;
+      }
+    }
+    if (watchers.get(msgId) === token) watchers.delete(msgId);
+  })();
+}
+
+async function showLive(i, matchId) {
+  try {
+    const msgId = i.message?.id ?? (await i.fetchReply()).id;
+    const view = await buildLiveView(matchId);
+    if (!view) {
+      stopWatch(msgId);
+      return await i.editReply(await endedPayload(matchId));
+    }
+    await i.editReply(await cardPayload(view, liveButtons(matchId)));
+    startWatch(i, msgId, matchId);
+  } catch (e) {
+    await fail(i, describeError(e));
+  }
+}
+
+async function handleLiveButton(i) {
+  const [, action, id] = i.customId.split(':');
+  await i.deferUpdate();
+  if (action === 'refresh') return showLive(i, Number(id));
+  if (action === 'list') {
+    stopWatch(i.message.id);
+    try {
+      return await i.editReply(livePicker(await activeMatches()));
+    } catch (e) {
+      return fail(i, describeError(e));
+    }
+  }
+}
+
+async function handleLivePick(i) {
+  await i.deferUpdate();
+  return showLive(i, Number(i.values[0]));
+}
+
 // ---------- Quiz ----------
 function quizRows(q, qi, userId, { chosen = null, disabled = false } = {}) {
   const row = new ActionRowBuilder();
-  q.options.forEach((opt, i) => {
+  q.options.forEach((opt, idx) => {
     let style = ButtonStyle.Secondary;
-    if (disabled && i === q.answer) style = ButtonStyle.Success;
-    else if (disabled && i === chosen) style = ButtonStyle.Danger;
+    if (disabled && idx === q.answer) style = ButtonStyle.Success;
+    else if (disabled && idx === chosen) style = ButtonStyle.Danger;
     row.addComponents(
-      new ButtonBuilder().setCustomId(`quiz:${userId}:${qi}:${i}`)
+      new ButtonBuilder().setCustomId(`quiz:${userId}:${qi}:${idx}`)
         .setLabel(opt.slice(0, 80)).setStyle(style).setDisabled(disabled),
     );
   });
@@ -188,90 +232,58 @@ const handlers = {
   async partida(i) {
     await i.deferReply();
     const matchId = i.options.getInteger('match_id');
-    await ensureHeroes();
     try {
-      const data = await api.matchMetadata(matchId);
-      const info = data.match_info ?? data;
-      const players = info.players ?? [];
-      if (!players.length) return i.editReply('A API devolveu essa partida sem dados de jogadores.');
-
-      const winner = info.winning_team;
-      const meta = [];
-      if (info.duration_s) meta.push(`⏱️ Duração: **${formatDuration(info.duration_s)}**`);
-      if (info.start_time) meta.push(`🕒 Início: <t:${info.start_time}:f>`);
-      if (winner != null) meta.push(`🏆 Vencedor: **Time ${winner}**`);
-
-      const embed = new EmbedBuilder()
-        .setTitle(`Partida ${matchId}`)
-        .setColor(0xf5b700)
-        .setDescription(meta.join('\n') || null)
-        .setFooter({ text: 'Dados: Deadlock API • K/D/A · souls' });
-
-      const byTeam = new Map();
-      for (const p of players) {
-        const t = p.team ?? 'all';
-        if (!byTeam.has(t)) byTeam.set(t, []);
-        byTeam.get(t).push(p);
-      }
-      for (const [t, list] of byTeam) {
-        list.sort((a, b) => (b.net_worth ?? 0) - (a.net_worth ?? 0));
-        const lines = list.map((p) => {
-          const souls = p.net_worth != null ? ` · ${(p.net_worth / 1000).toFixed(1)}k` : '';
-          return `**${heroName(p.hero_id)}** ${p.kills ?? 0}/${p.deaths ?? 0}/${p.assists ?? 0}${souls}`;
-        });
-        embed.addFields({
-          name: t === 'all' ? 'Jogadores' : `${t === winner ? '🏆 ' : ''}Time ${t}`,
-          value: lines.join('\n').slice(0, 1024),
-          inline: true,
-        });
-      }
-      return i.editReply({ embeds: [embed] });
+      await i.editReply(await finishedPayload(matchId));
     } catch (e) {
       if (e.status === 404) {
-        const live = await api.activeMatches().catch(() => []);
-        if (Array.isArray(live) && live.some((m) => Number(m.match_id) === matchId)) {
-          return i.editReply(`🔴 A partida \`${matchId}\` está **em andamento**. Os detalhes só ficam disponíveis depois que ela termina.`);
-        }
-        return i.editReply(
+        const live = await activeMatches().catch(() => []);
+        if (live.some((m) => Number(m.match_id) === matchId)) return showLive(i, matchId); // em andamento: mostra ao vivo
+        return fail(i,
           `Não encontrei a partida \`${matchId}\` na Deadlock API. Isso acontece quando o ID está errado, ` +
-          'a partida ainda não foi processada ou nunca foi enviada para a API (ela só tem partidas coletadas pela comunidade).',
-        );
+          'a partida ainda não foi processada ou nunca foi enviada para a API (ela só tem partidas coletadas pela comunidade).');
       }
-      return i.editReply(describeError(e));
-    }
-  },
-
-  async jogador(i) {
-    await i.deferReply();
-    const accountId = parseAccountId(i.options.getString('id'));
-    if (accountId == null) return i.editReply('Informe só números: o Account ID ou o SteamID64.');
-    await ensureHeroes();
-    try {
-      const history = await api.matchHistory(accountId);
-      if (!Array.isArray(history) || !history.length) {
-        return i.editReply('Sem partidas recentes para esse jogador na API.');
-      }
-      const lines = history.slice(0, 5).map((m) => {
-        const win = m.match_result === m.player_team;
-        const when = m.start_time ? ` · <t:${m.start_time}:R>` : '';
-        return `${win ? '🏆' : '💀'} \`${m.match_id}\` **${heroName(m.hero_id)}** ` +
-          `${m.player_kills ?? 0}/${m.player_deaths ?? 0}/${m.player_assists ?? 0}${when}`;
-      });
-      return i.editReply(`**Últimas partidas de** \`${accountId}\`\n${lines.join('\n')}`);
-    } catch (e) {
-      if (e.status === 404) return i.editReply('Jogador não encontrado na API.');
-      return i.editReply(describeError(e));
+      return fail(i, describeError(e));
     }
   },
 
   async aovivo(i) {
     await i.deferReply();
     try {
-      const matches = await api.activeMatches();
-      const ids = matches.slice(0, 10).map((m) => `\`${m.match_id}\``).join('\n');
-      return i.editReply(`🔴 **${matches.length} partidas ao vivo.** Algumas:\n${ids}`);
+      const matchId = i.options.getInteger('partida');
+      const player = i.options.getString('jogador');
+      if (matchId) return showLive(i, matchId);
+      if (player) {
+        const acc = parseAccountId(player);
+        if (acc == null) return fail(i, 'Informe só números: o Account ID ou o SteamID64.');
+        const m = (await activeMatches()).find((x) => x.players?.some((p) => p.account_id === acc));
+        if (!m) {
+          return fail(i, 'Esse jogador não aparece nas partidas ao vivo agora. O feed mostra apenas as partidas em destaque.');
+        }
+        return showLive(i, Number(m.match_id));
+      }
+      return await i.editReply(livePicker(await activeMatches()));
     } catch (e) {
-      return i.editReply(describeError(e));
+      return fail(i, describeError(e));
+    }
+  },
+
+  async jogador(i) {
+    await i.deferReply();
+    const accountId = parseAccountId(i.options.getString('id'));
+    if (accountId == null) return fail(i, 'Informe só números: o Account ID ou o SteamID64.');
+    await ensureHeroes();
+    try {
+      const history = await matchHistory(accountId);
+      if (!Array.isArray(history) || !history.length) return fail(i, 'Sem partidas recentes para esse jogador na API.');
+      const lines = history.slice(0, 5).map((m) => {
+        const win = m.match_result === m.player_team;
+        const when = m.start_time ? ` · <t:${m.start_time}:R>` : '';
+        return `${win ? '🏆' : '💀'} \`${m.match_id}\` **${heroName(m.hero_id)}** ` +
+          `${m.player_kills ?? 0}/${m.player_deaths ?? 0}/${m.player_assists ?? 0}${when}`;
+      });
+      return await i.editReply(`**Últimas partidas de** \`${accountId}\`\n${lines.join('\n')}\n-# Use /partida com um desses IDs para ver o placar.`);
+    } catch (e) {
+      return fail(i, e.status === 404 ? 'Jogador não encontrado na API.' : describeError(e));
     }
   },
 
@@ -336,6 +348,8 @@ const handlers = {
       }
     }
     lines.push(`Heróis carregados: ${heroes.size}`);
+    lines.push(`Placar em imagem: ${imageStatus}`);
+    lines.push(`Atualizações automáticas ativas: ${watchers.size}`);
     return i.editReply(lines.join('\n'));
   },
 };
@@ -348,12 +362,14 @@ client.once('clientReady', async () => {
   const guildId = process.env.GUILD_ID;
   if (guildId) await (await client.guilds.fetch(guildId)).commands.set(commands);
   else await client.application.commands.set(commands);
-  console.log(`Online como ${client.user.tag} • heróis carregados: ${heroes.size}`);
+  console.log(`Online como ${client.user.tag} • heróis: ${heroes.size} • imagem: ${imageStatus}`);
 });
 
 client.on('interactionCreate', async (i) => {
   try {
     if (i.isChatInputCommand()) await handlers[i.commandName]?.(i);
+    else if (i.isStringSelectMenu() && i.customId === 'live:pick') await handleLivePick(i);
+    else if (i.isButton() && i.customId.startsWith('live:')) await handleLiveButton(i);
     else if (i.isButton() && i.customId.startsWith('quiz:')) await handleQuizButton(i);
   } catch (e) {
     console.error(e);
