@@ -19,6 +19,10 @@ Bot de Discord que mostra placares de Deadlock (ao vivo e finalizados) usando a 
 3. Copie `.env.example` para `.env` e preencha `DISCORD_TOKEN`.
 4. Para o placar em imagem, coloque duas fontes estáticas em `assets/fonts/`: `font-regular.ttf` e `font-bold.ttf` (por exemplo, Rajdhani ou Inter, do Google Fonts, licença OFL).
 5. `npm start`
+## Vários servidores
+- Deixe `GUILD_ID` **vazio** no `.env` para registrar os comandos de forma global.
+- A pontuação do quiz é separada por servidor (`/ranking` mostra só quem joga no servidor atual).
+- Para convidar o bot a outros servidores, ative **Public Bot** na aba *Bot* do Developer Portal e use o link de instalação (escopos `bot` e `applications.commands`).
 ## Limites dos dados ao vivo
 O feed público traz heróis, souls por time e espectadores. K/D/A por jogador só existe depois que a partida termina.
  

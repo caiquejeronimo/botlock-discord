@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import {
   Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder,
-  ButtonBuilder, ButtonStyle, SlashCommandBuilder, MessageFlags,
+  ButtonBuilder, ButtonStyle, SlashCommandBuilder, MessageFlags, InteractionContextType,
 } from 'discord.js';
 import {
   API, ASSETS, ApiError, getJson, describeError, sleep, heroes, ensureHeroes, heroName,
@@ -28,35 +28,52 @@ function parseAccountId(input) {
   return id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : null;
 }
 
-// ---------- Perfil / pontuação ----------
-function loadStats() {
+// ---------- Perfil / pontuação (separados por servidor) ----------
+function saveAllStats(all) {
+  writeFileSync(STATS_FILE, JSON.stringify(all));
+}
+
+function loadAllStats(guildId) {
   if (!existsSync(STATS_FILE)) return {};
+  let raw;
   try {
-    const raw = JSON.parse(readFileSync(STATS_FILE, 'utf8'));
-    for (const [id, v] of Object.entries(raw)) {
-      if (typeof v === 'number') raw[id] = { points: v, answered: 0, correct: 0 };
-    }
-    return raw;
+    raw = JSON.parse(readFileSync(STATS_FILE, 'utf8'));
   } catch {
     return {};
   }
+  // Formato antigo (usuário -> pontos, sem separar por servidor): migra para o
+  // primeiro servidor que consultar a pontuação depois da atualização.
+  const legacy = Object.values(raw).some((v) => typeof v === 'number' || (v && typeof v === 'object' && 'points' in v));
+  if (legacy) {
+    const users = {};
+    for (const [uid, v] of Object.entries(raw)) {
+      users[uid] = typeof v === 'number' ? { points: v, answered: 0, correct: 0 } : v;
+    }
+    const migrated = { [guildId]: users };
+    saveAllStats(migrated);
+    return migrated;
+  }
+  return raw;
 }
 
-function recordAnswer(userId, correct) {
-  const all = loadStats();
-  const s = all[userId] ?? { points: 0, answered: 0, correct: 0 };
+const loadStats = (guildId) => loadAllStats(guildId)[guildId] ?? {};
+
+function recordAnswer(guildId, userId, correct) {
+  const all = loadAllStats(guildId);
+  const users = (all[guildId] ??= {});
+  const s = users[userId] ?? { points: 0, answered: 0, correct: 0 };
   s.answered += 1;
   if (correct) {
     s.correct += 1;
     s.points += POINTS_PER_CORRECT;
   }
-  all[userId] = s;
-  writeFileSync(STATS_FILE, JSON.stringify(all));
+  users[userId] = s;
+  saveAllStats(all);
   return s;
 }
 
-function rankOf(userId) {
-  const sorted = Object.entries(loadStats()).sort((a, b) => b[1].points - a[1].points);
+function rankOf(guildId, userId) {
+  const sorted = Object.entries(loadStats(guildId)).sort((a, b) => b[1].points - a[1].points);
   const idx = sorted.findIndex(([id]) => id === userId);
   return idx === -1 ? null : idx + 1;
 }
@@ -73,10 +90,13 @@ const commands = [
     .addStringOption((o) => o.setName('jogador').setDescription('Account ID ou SteamID64: acha a partida atual dele')),
   new SlashCommandBuilder().setName('jogador').setDescription('Últimas partidas de um jogador')
     .addStringOption((o) => o.setName('id').setDescription('Account ID ou SteamID64').setRequired(true)),
-  new SlashCommandBuilder().setName('quiz').setDescription('Pergunta aleatória sobre Deadlock'),
+  new SlashCommandBuilder().setName('quiz').setDescription('Pergunta aleatória sobre Deadlock')
+    .setContexts(InteractionContextType.Guild),
   new SlashCommandBuilder().setName('perfil').setDescription('Sua pontuação no quiz')
-    .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa')),
-  new SlashCommandBuilder().setName('ranking').setDescription('Ranking do quiz'),
+    .addUserOption((o) => o.setName('usuario').setDescription('Ver o perfil de outra pessoa'))
+    .setContexts(InteractionContextType.Guild),
+  new SlashCommandBuilder().setName('ranking').setDescription('Ranking do quiz neste servidor')
+    .setContexts(InteractionContextType.Guild),
   new SlashCommandBuilder().setName('status').setDescription('Testa a conexão do bot com a Deadlock API'),
 ].map((c) => c.toJSON());
 
@@ -207,8 +227,9 @@ async function handleQuizButton(interaction) {
   }
   const chosen = Number(choice);
   const correct = chosen === q.answer;
-  const stats = recordAnswer(ownerId, correct);
-  const pos = rankOf(ownerId);
+  const gid = interaction.guildId ?? 'dm';
+  const stats = recordAnswer(gid, ownerId, correct);
+  const pos = rankOf(gid, ownerId);
 
   const embed = new EmbedBuilder()
     .setColor(correct ? 0x57f287 : 0xed4245)
@@ -301,14 +322,15 @@ const handlers = {
 
   async perfil(i) {
     const target = i.options.getUser('usuario') ?? i.user;
-    const s = loadStats()[target.id];
+    const gid = i.guildId ?? 'dm';
+    const s = loadStats(gid)[target.id];
     if (!s) {
       const msg = target.id === i.user.id
         ? 'Você ainda não respondeu nenhuma pergunta. Use /quiz para começar!'
         : `${target.displayName} ainda não jogou o quiz.`;
       return i.reply({ content: msg, flags: MessageFlags.Ephemeral });
     }
-    const pos = rankOf(target.id);
+    const pos = rankOf(gid, target.id);
     const embed = new EmbedBuilder()
       .setColor(0xf5b700)
       .setTitle(`Perfil de ${target.displayName}`)
@@ -323,7 +345,7 @@ const handlers = {
   },
 
   async ranking(i) {
-    const top = Object.entries(loadStats()).sort((a, b) => b[1].points - a[1].points).slice(0, 10);
+    const top = Object.entries(loadStats(i.guildId ?? 'dm')).sort((a, b) => b[1].points - a[1].points).slice(0, 10);
     const medals = ['🥇', '🥈', '🥉'];
     const text = top
       .map(([id, s], n) => `${medals[n] ?? `${n + 1}.`} <@${id}> — **${s.points}** pts (${s.correct}/${s.answered})`)
@@ -335,7 +357,7 @@ const handlers = {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const checks = [
       ['Deadlock API', `${API}/v1/matches/active`],
-      ['Assets (heróis)', `${ASSETS}/heroes`],
+      ['Assets (heróis)', `${ASSETS}/v2/heroes`],
     ];
     const lines = [];
     for (const [name, url] of checks) {
@@ -347,6 +369,7 @@ const handlers = {
         lines.push(`❌ ${name}: ${e.status ?? e.code}`);
       }
     }
+    lines.push(`Servidores: ${client.guilds.cache.size}`);
     lines.push(`Heróis carregados: ${heroes.size}`);
     lines.push(`Placar em imagem: ${imageStatus}`);
     lines.push(`Atualizações automáticas ativas: ${watchers.size}`);
@@ -360,9 +383,17 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once('clientReady', async () => {
   await ensureHeroes();
   const guildId = process.env.GUILD_ID;
-  if (guildId) await (await client.guilds.fetch(guildId)).commands.set(commands);
-  else await client.application.commands.set(commands);
-  console.log(`Online como ${client.user.tag} • heróis: ${heroes.size} • imagem: ${imageStatus}`);
+  if (guildId) {
+    // Modo de testes: comandos só neste servidor (aparecem na hora).
+    await (await client.guilds.fetch(guildId)).commands.set(commands);
+  } else {
+    // Produção: comandos globais, valem em todos os servidores onde o bot estiver.
+    await client.application.commands.set(commands);
+    // Uma vez só: remove os comandos antigos do servidor de testes para não duplicarem.
+    const old = process.env.CLEAR_GUILD_ID;
+    if (old) await (await client.guilds.fetch(old)).commands.set([]);
+  }
+  console.log(`Online como ${client.user.tag} • servidores: ${client.guilds.cache.size} • heróis: ${heroes.size} • imagem: ${imageStatus}`);
 });
 
 client.on('interactionCreate', async (i) => {
