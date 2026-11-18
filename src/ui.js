@@ -1,7 +1,7 @@
 import {
   ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ContainerBuilder,
   MediaGalleryBuilder, MediaGalleryItemBuilder, MessageFlags, SeparatorBuilder,
-  SeparatorSpacingSize, StringSelectMenuBuilder, TextDisplayBuilder,
+  SeparatorSpacingSize, TextDisplayBuilder,
 } from 'discord.js';
 import { renderCard } from './render.js';
 import { fmtK, fmtTime } from './views.js';
@@ -27,9 +27,9 @@ function headerText(view) {
 }
 
 // Layout em texto: usado quando a imagem não está disponível.
-function teamText(t, winner) {
+function teamText(t, winner, highlightId) {
   const head = `**${t.id === winner ? '🏆 ' : ''}${t.label}**${t.netWorth != null ? ` · ${fmtK(t.netWorth)} souls` : ''}`;
-  const rows = t.rows.map((r) => `• **${r.hero}** — ${r.name}${r.kda ? ` · ${r.kda}` : ''}${r.souls ? ` · ${r.souls}` : ''}`);
+  const rows = t.rows.map((r) => `${highlightId && r.accountId === highlightId ? '⭐' : '•'} **${r.hero}** — ${r.name}${r.kda ? ` · ${r.kda}` : ''}${r.souls ? ` · ${r.souls}` : ''}`);
   return [head, ...rows].join('\n');
 }
 
@@ -53,7 +53,7 @@ export async function cardPayload(view, buttons = null) {
     );
   } else {
     container.addSeparatorComponents(divider());
-    for (const t of view.teams) container.addTextDisplayComponents(text(teamText(t, view.winner)));
+    for (const t of view.teams) container.addTextDisplayComponents(text(teamText(t, view.winner, view.highlightId)));
   }
 
   container.addTextDisplayComponents(text('-# Dados: Deadlock API · podem ter atraso'));
@@ -64,34 +64,12 @@ export async function cardPayload(view, buttons = null) {
   return v2(container, files);
 }
 
-export function liveButtons(matchId) {
+export function liveButtons(matchId, accountId = null) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`live:refresh:${matchId}`).setLabel('Atualizar').setEmoji('🔄').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('live:list').setLabel('Outras partidas').setEmoji('📋').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`live:refresh:${matchId}:${accountId ?? 0}`)
+      .setLabel('Atualizar').setEmoji('🔄').setStyle(ButtonStyle.Primary),
   );
-}
-
-export function livePicker(matches) {
-  const container = new ContainerBuilder().setAccentColor(0xed4245);
-  if (!matches.length) {
-    container.addTextDisplayComponents(text('## 🔴 Partidas ao vivo\nNenhuma partida em destaque agora. Tente de novo em instantes.'));
-    return v2(container);
-  }
-  const top = [...matches].sort((a, b) => (b.spectators ?? 0) - (a.spectators ?? 0)).slice(0, 25);
-  container.addTextDisplayComponents(
-    text(`## 🔴 ${matches.length} partidas ao vivo\nEscolha uma para ver o placar. Ele atualiza sozinho por alguns minutos.`),
-  );
-  const elapsed = (m) => (m.start_time ? ` · ⏱ ${fmtTime(Math.max(0, Math.floor(Date.now() / 1000) - m.start_time))}` : '');
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('live:pick')
-    .setPlaceholder('Escolha uma partida…')
-    .addOptions(top.map((m) => ({
-      label: `Partida ${m.match_id}`,
-      description: `👁 ${m.spectators ?? 0} espectadores · ${m.players?.length ?? 0} jogadores${elapsed(m)}`.slice(0, 100),
-      value: String(m.match_id),
-    })));
-  container.addActionRowComponents(new ActionRowBuilder().addComponents(menu));
-  return v2(container);
 }
 
 export function simplePayload(message, buttons = null) {
@@ -99,7 +77,3 @@ export function simplePayload(message, buttons = null) {
   if (buttons) container.addActionRowComponents(buttons);
   return v2(container);
 }
-
-export const listButton = () => new ActionRowBuilder().addComponents(
-  new ButtonBuilder().setCustomId('live:list').setLabel('Ver partidas ao vivo').setEmoji('📋').setStyle(ButtonStyle.Secondary),
-);

@@ -16,11 +16,12 @@ const teamLabel = (id) => TEAMS[id]?.name ?? `Time ${id}`;
 const teamColor = (id, idx) => TEAMS[id]?.color ?? FALLBACK_COLORS[idx % 2];
 
 // Partida ao vivo: só há heróis, nomes e souls por time.
-export function viewFromActive(m, nameOf) {
+export function viewFromActive(m, nameOf, highlightId = null) {
   const players = m.players ?? [];
   const ids = [...new Set(players.map((p) => p.team))].sort();
   return {
     kind: 'live',
+    highlightId,
     matchId: m.match_id,
     spectators: m.spectators ?? null,
     elapsedS: m.start_time ? Math.max(0, Math.floor(Date.now() / 1000) - m.start_time) : null,
@@ -31,6 +32,7 @@ export function viewFromActive(m, nameOf) {
       netWorth: (m.team_stats ?? []).find((t) => t.team === id)?.net_worth ?? null,
       rows: players.filter((p) => p.team === id).map((p) => ({
         heroId: p.hero_id,
+        accountId: p.account_id,
         hero: heroName(p.hero_id),
         name: nameOf(p.account_id) ?? `ID ${p.account_id}`,
       })),
@@ -57,6 +59,7 @@ export function viewFromMetadata(matchId, info, nameOf) {
         netWorth: list.every((p) => p.net_worth != null) ? list.reduce((s, p) => s + p.net_worth, 0) : null,
         rows: list.map((p) => ({
           heroId: p.hero_id,
+          accountId: p.account_id,
           hero: heroName(p.hero_id),
           name: nameOf(p.account_id) ?? `ID ${p.account_id}`,
           kda: `${p.kills ?? 0}/${p.deaths ?? 0}/${p.assists ?? 0}`,

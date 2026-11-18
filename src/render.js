@@ -171,6 +171,12 @@ export async function renderCard(view) {
       ctx.fillStyle = C.panel;
       roundRect(ctx, x, y, colW, rowH, 10);
       ctx.fill();
+      if (view.highlightId && r.accountId === view.highlightId) {
+        ctx.strokeStyle = C.gold;
+        ctx.lineWidth = 2;
+        roundRect(ctx, x + 1, y + 1, colW - 2, rowH - 2, 10);
+        ctx.stroke();
+      }
       ctx.fillStyle = t.color;
       roundRect(ctx, x, y, 4, rowH, 2);
       ctx.fill();

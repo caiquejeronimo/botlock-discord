@@ -4,7 +4,7 @@ import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
 export const API = 'https://api.deadlock-api.com';
-export const ASSETS = 'https://api.deadlock-api.com/v1/assets';
+export const ASSETS = 'https://assets.deadlock-api.com';
 const HEADERS = { 'User-Agent': 'deadlock-discord-bot/0.3', Accept: 'application/json' };
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,7 +56,7 @@ function pickIcon(images = {}) {
 export async function ensureHeroes() {
   if (heroes.size) return;
   try {
-    const data = await getJson(`${ASSETS}/heroes`);
+    const data = await getJson(`${ASSETS}/v2/heroes`);
     if (Array.isArray(data)) {
       for (const h of data) heroes.set(h.id, { name: h.name, icon: pickIcon(h.images) });
     }
@@ -73,6 +73,18 @@ export async function activeMatches() {
   const data = await getJson(`${API}/v1/matches/active`);
   activeCache = { at: Date.now(), data: Array.isArray(data) ? data : [] };
   return activeCache.data;
+}
+
+// Partidas ao vivo que têm um jogador específico (não precisa estar no feed em destaque).
+const activeByAccount = new Map();
+export async function activeMatchesFor(accountId) {
+  const hit = activeByAccount.get(accountId);
+  if (hit && Date.now() - hit.at < 15_000) return hit.data;
+  const data = await getJson(`${API}/v1/matches/active?account_id=${accountId}`);
+  const list = Array.isArray(data) ? data : [];
+  if (activeByAccount.size > 500) activeByAccount.clear();
+  activeByAccount.set(accountId, { at: Date.now(), data: list });
+  return list;
 }
 
 const matchCache = new Map(); // partidas finalizadas não mudam
