@@ -24,6 +24,17 @@ const WATCH_TICKS = 10;      // 10 x 30s = 5 minutos de atualização automátic
 const MAX_WATCHERS = 20;     // limite para proteger o host e a API
 const COOLDOWN_MS = 3_000;   // por usuário, nos comandos com prefixo
 
+// Quiz: 1 resposta por dia, por usuário e servidor. O "dia" vira à meia-noite deste fuso.
+// QUIZ_DAILY_LIMIT=off libera respostas ilimitadas (útil para testar).
+const QUIZ_LIMIT = process.env.QUIZ_DAILY_LIMIT !== 'off';
+let QUIZ_TZ = process.env.QUIZ_TZ || 'America/Sao_Paulo';
+try {
+  new Intl.DateTimeFormat('en-US', { timeZone: QUIZ_TZ });
+} catch {
+  console.warn(`[quiz] Fuso inválido "${QUIZ_TZ}", usando America/Sao_Paulo.`);
+  QUIZ_TZ = 'America/Sao_Paulo';
+}
+
 let client;
 let prefixActive = false;
 
@@ -65,22 +76,77 @@ function loadAllStats(guildId) {
 
 const loadStats = (guildId) => loadAllStats(guildId)[guildId] ?? {};
 
-function recordAnswer(guildId, userId, correct) {
+// ----- "dia" do quiz no fuso configurado -----
+function tzParts(ms, tz) {
+  const f = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  return Object.fromEntries(f.formatToParts(ms).map((p) => [p.type, p.value]));
+}
+const dayKey = (ms, tz) => {
+  const o = tzParts(ms, tz);
+  return `${o.year}-${o.month}-${o.day}`;
+};
+function nextResetMs(ms, tz) {
+  const o = tzParts(ms, tz);
+  const guess = Date.UTC(+o.year, +o.month - 1, +o.day + 1); // 00:00 UTC do dia seguinte
+  const p = tzParts(guess, tz);
+  const wall = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return guess - (wall - guess); // converte "meia-noite no fuso" para o instante real
+}
+const nextResetTs = () => Math.floor(nextResetMs(Date.now(), QUIZ_TZ) / 1000);
+
+const played = (s) => s.answered > 0 || s.points > 0;
+const answeredToday = (s) => QUIZ_LIMIT && s?.daily?.day === dayKey(Date.now(), QUIZ_TZ) && s.daily.done === true;
+
+// Escolhe (ou devolve) a pergunta do dia. Pedir de novo antes de responder devolve a MESMA
+// pergunta, para ninguém abrir várias e escolher a mais fácil.
+function assignQuiz(guildId, userId, total) {
+  const resetTs = nextResetTs();
+  const pick = (avoid) => {
+    let qi = Math.floor(Math.random() * total);
+    if (total > 1 && qi === avoid) qi = (qi + 1) % total;
+    return qi;
+  };
+  if (!QUIZ_LIMIT) return { blocked: false, qi: pick(-1), resetTs };
+
+  const today = dayKey(Date.now(), QUIZ_TZ);
   const all = loadAllStats(guildId);
   const users = (all[guildId] ??= {});
-  const s = users[userId] ?? { points: 0, answered: 0, correct: 0 };
+  const s = (users[userId] ??= { points: 0, answered: 0, correct: 0 });
+  if (s.daily?.day === today) {
+    if (s.daily.done) return { blocked: true, resetTs };
+    if (s.daily.qi < total) return { blocked: false, qi: s.daily.qi, resetTs };
+  }
+  const qi = pick(s.daily?.qi ?? -1);
+  s.daily = { day: today, qi, done: false };
+  saveAllStats(all);
+  return { blocked: false, qi, resetTs };
+}
+
+// Registra a resposta. Só vale se for a pergunta de hoje e ainda não respondida.
+function submitAnswer(guildId, userId, qi, correct) {
+  const all = loadAllStats(guildId);
+  const users = (all[guildId] ??= {});
+  const s = (users[userId] ??= { points: 0, answered: 0, correct: 0 });
+  if (QUIZ_LIMIT) {
+    const today = dayKey(Date.now(), QUIZ_TZ);
+    if (s.daily?.day !== today || s.daily.qi !== qi) return { status: 'expired' };
+    if (s.daily.done) return { status: 'done' };
+    s.daily.done = true;
+  }
   s.answered += 1;
   if (correct) {
     s.correct += 1;
     s.points += POINTS_PER_CORRECT;
   }
-  users[userId] = s;
   saveAllStats(all);
-  return s;
+  return { status: 'ok', stats: s };
 }
 
 function rankOf(guildId, userId) {
-  const sorted = Object.entries(loadStats(guildId)).sort((a, b) => b[1].points - a[1].points);
+  const sorted = Object.entries(loadStats(guildId)).filter(([, s]) => played(s)).sort((a, b) => b[1].points - a[1].points);
   const idx = sorted.findIndex(([id]) => id === userId);
   return idx === -1 ? null : idx + 1;
 }
@@ -108,8 +174,9 @@ const commands = [
     .setContexts(InteractionContextType.Guild),
   new SlashCommandBuilder().setName('ranking').setDescription('Ranking do quiz neste servidor')
     .setContexts(InteractionContextType.Guild),
-  new SlashCommandBuilder().setName('status').setDescription('Testa a conexão do bot com a Deadlock API'),
-  new SlashCommandBuilder().setName('ajuda').setDescription('Lista os comandos'),
+  new SlashCommandBuilder().setName('status').setDescription('Testa a conexão do bot com a Deadlock API')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
+  new SlashCommandBuilder().setName('ajuda').setDescription('Mostra todos os comandos disponíveis'),
 ].map((c) => c.toJSON());
 
 // ---------- Comandos com prefixo (!) ----------
@@ -120,7 +187,7 @@ const ALIASES = {
   vincular: 'vincular', link: 'vincular',
   desvincular: 'desvincular', unlink: 'desvincular',
   quiz: 'quiz', perfil: 'perfil', ranking: 'ranking', rank: 'ranking',
-  status: 'status', ajuda: 'ajuda', help: 'ajuda',
+  status: 'status', ajuda: 'ajuda', help: 'ajuda', comandos: 'ajuda', funcoes: 'ajuda',
 };
 
 function stripEphemeral(payload) {
@@ -333,15 +400,23 @@ async function handleQuizButton(interaction) {
     return interaction.reply({ content: `Essa pergunta é de outra pessoa. Use ${PREFIX}quiz para a sua!`, flags: MessageFlags.Ephemeral });
   }
   const q = loadQuestions()[Number(qi)];
-  if (!q) {
-    return interaction.update({ content: `Essa pergunta não existe mais. Use ${PREFIX}quiz para uma nova.`, embeds: [], components: [] });
-  }
   const chosen = Number(choice);
-  const correct = chosen === q.answer;
   const gid = interaction.guildId ?? 'dm';
-  const stats = recordAnswer(gid, ownerId, correct);
-  const pos = rankOf(gid, ownerId);
+  const res = q ? submitAnswer(gid, ownerId, Number(qi), chosen === q.answer) : { status: 'expired' };
 
+  if (res.status === 'expired') {
+    return interaction.update({ content: `Essa pergunta expirou. Use ${PREFIX}quiz para ver a de hoje.`, embeds: [], components: [] });
+  }
+  if (res.status === 'done') {
+    return interaction.update({
+      content: `⏳ Você já respondeu o quiz de hoje! A próxima pergunta libera <t:${nextResetTs()}:R>.`,
+      embeds: [], components: [],
+    });
+  }
+
+  const correct = chosen === q.answer;
+  const stats = res.stats;
+  const pos = rankOf(gid, ownerId);
   const embed = new EmbedBuilder()
     .setColor(correct ? 0x57f287 : 0xed4245)
     .setTitle(correct ? `✅ Correto! +${POINTS_PER_CORRECT} pontos` : '❌ Não foi dessa vez')
@@ -354,7 +429,8 @@ async function handleQuizButton(interaction) {
       { name: 'Acertos', value: `${stats.correct}/${stats.answered} (${accuracy(stats)}%)`, inline: true },
       { name: 'Posição', value: pos ? `#${pos}` : '—', inline: true },
     )
-    .setFooter({ text: `${PREFIX}quiz para jogar de novo • ${PREFIX}perfil • ${PREFIX}ranking` });
+    .setFooter({ text: `${PREFIX}perfil • ${PREFIX}ranking` });
+  if (QUIZ_LIMIT) embed.addFields({ name: 'Próxima pergunta', value: `<t:${nextResetTs()}:R>`, inline: true });
 
   return interaction.update({ embeds: [embed], components: quizRows(q, qi, ownerId, { chosen, disabled: true }) });
 }
@@ -434,21 +510,31 @@ const handlers = {
 
   async quiz(i) {
     const qs = loadQuestions();
-    const qi = Math.floor(Math.random() * qs.length);
-    const q = qs[qi];
+    const slot = assignQuiz(i.guildId ?? 'dm', i.user.id, qs.length);
+    if (slot.blocked) {
+      return i.reply({
+        content: `⏳ Você já respondeu o quiz de hoje! A próxima pergunta libera <t:${slot.resetTs}:R> (<t:${slot.resetTs}:t>).`,
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+    const q = qs[slot.qi];
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle('🧠 Quiz Deadlock')
       .setDescription(`**${q.question}**`)
-      .setFooter({ text: `${POINTS_PER_CORRECT} pontos por acerto • ${PREFIX}perfil mostra sua pontuação` });
-    return i.reply({ embeds: [embed], components: quizRows(q, qi, i.user.id) });
+      .setFooter({
+        text: QUIZ_LIMIT
+          ? `1 pergunta por dia • ${POINTS_PER_CORRECT} pontos por acerto`
+          : `${POINTS_PER_CORRECT} pontos por acerto`,
+      });
+    return i.reply({ embeds: [embed], components: quizRows(q, slot.qi, i.user.id) });
   },
 
   async perfil(i) {
     const target = i.options.getUser('usuario') ?? i.user;
     const gid = i.guildId ?? 'dm';
     const s = loadStats(gid)[target.id];
-    if (!s) {
+    if (!s || !played(s)) {
       const msg = target.id === i.user.id
         ? `Você ainda não respondeu nenhuma pergunta. Use ${PREFIX}quiz para começar!`
         : `${target.displayName} ainda não jogou o quiz.`;
@@ -465,11 +551,15 @@ const handlers = {
         { name: 'Respondidas', value: `${s.answered}`, inline: true },
         { name: 'Acertos', value: `${s.correct} (${accuracy(s)}%)`, inline: true },
       );
+    if (QUIZ_LIMIT) {
+      embed.addFields({ name: 'Quiz de hoje', value: answeredToday(s) ? '✅ Respondido' : '⏳ Disponível', inline: true });
+    }
     return i.reply({ embeds: [embed] });
   },
 
   async ranking(i) {
-    const top = Object.entries(loadStats(i.guildId ?? 'dm')).sort((a, b) => b[1].points - a[1].points).slice(0, 10);
+    const top = Object.entries(loadStats(i.guildId ?? 'dm')).filter(([, s]) => played(s))
+      .sort((a, b) => b[1].points - a[1].points).slice(0, 10);
     const medals = ['🥇', '🥈', '🥉'];
     const text = top
       .map(([id, s], n) => `${medals[n] ?? `${n + 1}.`} <@${id}> — **${s.points}** pts (${s.correct}/${s.answered})`)
@@ -502,19 +592,42 @@ const handlers = {
   },
 
   async ajuda(i) {
-    const p = PREFIX;
-    return i.reply({
-      content: [
-        '**Comandos** (funcionam com `/` e com o prefixo):',
-        `\`${p}vincular <id>\` — liga sua conta do Deadlock ao seu Discord (Account ID ou SteamID64)`,
-        `\`${p}aovivo\` — placar ao vivo da sua partida · \`${p}aovivo @pessoa\` ou \`${p}aovivo <id>\` para outro jogador`,
-        `\`${p}partida <match_id>\` — placar de uma partida`,
-        `\`${p}jogador\` — suas últimas partidas`,
-        `\`${p}quiz\` · \`${p}perfil\` · \`${p}ranking\` — quiz com pontuação`,
-        `\`${p}desvincular\` — remove o vínculo`,
-      ].join('\n'),
-      allowedMentions: { parse: [] },
-    });
+    const p = prefixActive ? PREFIX : '/';
+    const sections = [
+      ['🎮 Partidas', [
+        ['aovivo', '[@pessoa|id]', 'Placar ao vivo da sua partida (ou de outro jogador)'],
+        ['partida', '<match_id>', 'Placar de uma partida, ao vivo ou finalizada'],
+        ['jogador', '[@pessoa|id]', 'Últimas 5 partidas'],
+      ]],
+      ['🔗 Conta', [
+        ['vincular', '<id>', 'Liga sua conta do Deadlock (Account ID ou SteamID64) ao seu Discord'],
+        ['desvincular', '', 'Remove o vínculo da sua conta'],
+      ]],
+      ['🧠 Quiz', [
+        ['quiz', '', QUIZ_LIMIT ? `1 pergunta por dia, ${POINTS_PER_CORRECT} pontos por acerto` : `Pergunta com ${POINTS_PER_CORRECT} pontos por acerto`],
+        ['perfil', '[@pessoa]', 'Pontos, posição e taxa de acerto'],
+        ['ranking', '', 'Top 10 do servidor'],
+      ]],
+      ['⚙️ Outros', [
+        ['ajuda', '', 'Mostra esta lista'],
+        ['status', '', 'Diagnóstico do bot (exige Gerenciar Servidor)'],
+      ]],
+    ];
+    const embed = new EmbedBuilder()
+      .setColor(0xf5b700)
+      .setTitle('📖 Comandos do bot')
+      .setDescription(
+        (prefixActive ? `Funcionam com \`${PREFIX}\` e com \`/\`. ` : 'Use os comandos com `/`. ') +
+        '`[ ]` = opcional · `< >` = obrigatório',
+      );
+    for (const [name, items] of sections) {
+      embed.addFields({
+        name,
+        value: items.map(([c, a, d]) => `\`${p}${c}${a ? ` ${a}` : ''}\` — ${d}`).join('\n'),
+      });
+    }
+    embed.setFooter({ text: `Dica: use ${p}vincular uma vez e depois é só digitar ${p}aovivo quando estiver em partida` });
+    return i.reply({ embeds: [embed], allowedMentions: { parse: [] } });
   },
 };
 
