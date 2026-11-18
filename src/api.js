@@ -4,7 +4,7 @@ import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
 export const API = 'https://api.deadlock-api.com';
-export const ASSETS = 'https://assets.deadlock-api.com';
+export const ASSETS = 'https://api.deadlock-api.com/v1/assets';
 const HEADERS = { 'User-Agent': 'deadlock-discord-bot/0.3', Accept: 'application/json' };
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,9 +56,10 @@ function pickIcon(images = {}) {
 export async function ensureHeroes() {
   if (heroes.size) return;
   try {
-    const data = await getJson(`${ASSETS}/v2/heroes`);
-    if (Array.isArray(data)) {
-      for (const h of data) heroes.set(h.id, { name: h.name, icon: pickIcon(h.images) });
+    const data = await getJson(`${ASSETS}/heroes`);
+    const list = Array.isArray(data) ? data : (data?.heroes ?? []);
+    for (const h of list) {
+      if (h?.id != null) heroes.set(h.id, { name: h.name ?? `Herói #${h.id}`, icon: pickIcon(h.images ?? h) });
     }
   } catch { /* já logado; segue com nomes genéricos */ }
 }

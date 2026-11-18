@@ -481,7 +481,7 @@ const handlers = {
     await i.deferReply({ flags: MessageFlags.Ephemeral });
     const checks = [
       ['Deadlock API', `${API}/v1/matches/active`],
-      ['Assets (heróis)', `${ASSETS}/v2/heroes`],
+      ['Assets (heróis)', `${ASSETS}/heroes`],
     ];
     const lines = [];
     for (const [name, url] of checks) {
