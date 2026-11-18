@@ -4,7 +4,7 @@ import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
 export const API = 'https://api.deadlock-api.com';
-export const ASSETS = 'https://api.deadlock-api.com/v1/assets/';
+export const ASSETS = 'https://api.deadlock-api.com/v1/assets';
 const HEADERS = { 'User-Agent': 'deadlock-discord-bot/0.3', Accept: 'application/json' };
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
